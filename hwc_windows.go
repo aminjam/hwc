@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"text/template"
 	"unsafe"
+
+	"github.com/docker/distribution/uuid"
 )
 
 var (
@@ -179,13 +181,12 @@ func main() {
 	checkErr(wc.Activate(
 		app.ApplicationHostConfig,
 		app.WebConfig,
-		"aj01"))
+		uuid.Generate().String()))
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	s := <-c
 	checkErr(wc.Shutdown(1))
-	fmt.Println("Got signal:", s)
 }
 
 func checkErr(err error) {
