@@ -1,5 +1,16 @@
 package main
 
+const AspnetConfig = `<?xml version="1.0" encoding="UTF-8" ?>
+<configuration>
+  <runtime>
+    <legacyUnhandledExceptionPolicy enabled="false" />
+    <legacyImpersonationPolicy enabled="true"/>
+    <alwaysFlowImpersonationPolicy enabled="false"/>
+    <SymbolReadingPolicy enabled="1" />
+  </runtime>
+  <startup useLegacyV2RuntimeActivationPolicy="true" />
+</configuration>
+`
 const ApplicationHostConfig = `<?xml version="1.0" encoding="UTF-8"?>
 <configuration>
   <configSections>
@@ -79,7 +90,7 @@ const ApplicationHostConfig = `<?xml version="1.0" encoding="UTF-8"?>
   <system.applicationHost>
 
     <applicationPools>
-		<add name="AppPool{{.Port}}" managedRuntimeVersion="v4.0" managedPipelineMode="Integrated" CLRConfigFile="C:\aspnet.config" autoStart="true" startMode="AlwaysRunning" />
+		<add name="AppPool{{.Port}}" managedRuntimeVersion="v4.0" managedPipelineMode="Integrated" CLRConfigFile="{{.AspnetConfig}}" autoStart="true" startMode="AlwaysRunning" />
     </applicationPools>
 
     <listenerAdapters>

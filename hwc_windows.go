@@ -1,10 +1,12 @@
 // +build windows
+
 package main
 
 import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,61 +17,150 @@ import (
 )
 
 var (
-	hwebcore, _        = syscall.LoadLibrary(os.ExpandEnv(`${windir}\\\system32\inetsrv\hwebcore.dll`))
-	webCoreActivate, _ = syscall.GetProcAddress(hwebcore, "WebCoreActivate")
-	webCoreShutdown, _ = syscall.GetProcAddress(hwebcore, "WebCoreShutdown")
-	appRootPath        string
-	ErrMissingPortEnv  = errors.New("Missing PORT environment variable")
+	appRootPath       string
+	ErrMissingPortEnv = errors.New("Missing PORT environment variable")
 )
 
-func WebCoreActivate(appHostConfig, rootWebConfig, instanceName string) error {
-	var nargs uintptr = 3
-	r1, _, callErr := syscall.Syscall(uintptr(webCoreActivate),
-		nargs,
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(appHostConfig))),
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(rootWebConfig))),
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(instanceName))))
+type webCore struct {
+	activated bool
+	handle    syscall.Handle
+}
 
-	fmt.Println(r1, " - ", callErr)
-	if callErr != 0 {
-		return callErr
+func newWebCore() (*webCore, error) {
+	hwebcore, err := syscall.LoadLibrary(os.ExpandEnv(`${windir}\\\system32\inetsrv\hwebcore.dll`))
+	if err != nil {
+		return nil, err
 	}
-	fmt.Println("Server Started")
+	return &webCore{
+		activated: false,
+		handle:    hwebcore,
+	}, nil
+}
+
+func (w *webCore) Activate(appHostConfig, rootWebConfig, instanceName string) error {
+	if !w.activated {
+		webCoreActivate, err := syscall.GetProcAddress(w.handle, "WebCoreActivate")
+		if err != nil {
+			return err
+		}
+		var nargs uintptr = 3
+		r1, _, callErr := syscall.Syscall(uintptr(webCoreActivate),
+			nargs,
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(appHostConfig))),
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(rootWebConfig))),
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(instanceName))))
+
+		fmt.Println(r1, " - ", callErr)
+		if callErr != 0 {
+			return callErr
+		}
+		fmt.Println("Server Started")
+		w.activated = true
+	}
 	return nil
 }
-func WebCoreShutdown(immediate int) error {
-	var nargs uintptr = 1
-	r1, _, callErr := syscall.Syscall(uintptr(webCoreShutdown),
-		nargs, uintptr(unsafe.Pointer(&immediate)), 0, 0)
+func (w *webCore) Shutdown(immediate int) error {
+	if w.activated {
+		webCoreShutdown, err := syscall.GetProcAddress(w.handle, "WebCoreShutdown")
+		if err != nil {
+			return err
+		}
+		var nargs uintptr = 1
+		r1, _, callErr := syscall.Syscall(uintptr(webCoreShutdown),
+			nargs, uintptr(unsafe.Pointer(&immediate)), 0, 0)
 
-	fmt.Println(r1, " - ", callErr)
-	if callErr != 0 {
-		return callErr
+		fmt.Println(r1, " - ", callErr)
+		if callErr != 0 {
+			return callErr
+		}
+		fmt.Println("Server Shutdown")
 	}
-	fmt.Println("Server Shutdown")
 	return nil
 }
 
 type App struct {
-	Port     int
-	RootPath string
+	Port                  int
+	RootPath              string
+	ApplicationHostConfig string
+	AspnetConfig          string
+	WebConfig             string
 }
 
-func ahcConfig(config App) error {
-	ahcFile, err := os.Create("C:\\applicationhost.config")
+func (a App) applicationHostConfig() error {
+	file, err := os.Create(a.ApplicationHostConfig)
 	if err != nil {
 		return err
 	}
-	defer ahcFile.Close()
+	defer file.Close()
 	var tmpl = template.Must(template.New("applicationhost").Parse(ApplicationHostConfig))
-	if err := tmpl.Execute(ahcFile, config); err != nil {
+	if err := tmpl.Execute(file, a); err != nil {
+		return err
+	}
+	return nil
+}
+func (a App) aspnetConfig() error {
+	file, err := os.Create(a.AspnetConfig)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	var tmpl = template.Must(template.New("aspnet").Parse(AspnetConfig))
+	if err := tmpl.Execute(file, a); err != nil {
+		return err
+	}
+	return nil
+}
+func (a App) webConfig() error {
+	rootWebConfig := os.ExpandEnv(`${windir}\\\Microsoft.NET\Framework\v4.0.30319\Config\web.config`)
+	in, err := os.Open(rootWebConfig)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(a.WebConfig)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+	err = out.Close()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+func (a *App) configure() error {
+	dest := filepath.Join(a.RootPath, ".cloudfoundry", "hwc")
+	err := os.MkdirAll(dest, 0700)
+	if err != nil {
+		return err
+	}
+	a.ApplicationHostConfig = filepath.Join(dest, "applicationhost.config")
+	a.AspnetConfig = filepath.Join(dest, "aspnet.config")
+	a.WebConfig = filepath.Join(dest, "web.config")
+	err = a.applicationHostConfig()
+	if err != nil {
+		return err
+	}
+	err = a.aspnetConfig()
+	if err != nil {
+		return err
+	}
+	err = a.webConfig()
+	if err != nil {
 		return err
 	}
 	return nil
 }
 func main() {
 	flag.Parse()
-	defer syscall.FreeLibrary(hwebcore)
+
+	wc, err := newWebCore()
+	checkErr(err)
+	defer syscall.FreeLibrary(wc.handle)
 
 	if os.Getenv("PORT") == "" {
 		checkErr(ErrMissingPortEnv)
@@ -83,18 +174,17 @@ func main() {
 		Port:     port,
 		RootPath: rootPath,
 	}
+	checkErr(app.configure())
 
-	checkErr(ahcConfig(app))
-
-	checkErr(WebCoreActivate(
-		"c:\\applicationhost.config",
-		"c:\\web.config",
+	checkErr(wc.Activate(
+		app.ApplicationHostConfig,
+		app.WebConfig,
 		"aj01"))
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, os.Kill)
+	signal.Notify(c, os.Interrupt)
 	s := <-c
-	checkErr(WebCoreShutdown(1))
+	checkErr(wc.Shutdown(1))
 	fmt.Println("Got signal:", s)
 }
 
