@@ -46,41 +46,40 @@ func (w *webCore) Activate(appHostConfig, rootWebConfig, instanceName string) er
 			return err
 		}
 		var nargs uintptr = 3
-		r1, _, callErr := syscall.Syscall(uintptr(webCoreActivate),
+		_, _, callErr := syscall.Syscall(uintptr(webCoreActivate),
 			nargs,
 			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(appHostConfig))),
 			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(rootWebConfig))),
 			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(instanceName))))
 
-		fmt.Println(r1, " - ", callErr)
 		if callErr != 0 {
 			return callErr
 		}
-		fmt.Println("Server Started")
+		fmt.Printf("Server Started for %+v\n", instanceName)
 		w.activated = true
 	}
 	return nil
 }
-func (w *webCore) Shutdown(immediate int) error {
+func (w *webCore) Shutdown(immediate int, instanceName string) error {
 	if w.activated {
 		webCoreShutdown, err := syscall.GetProcAddress(w.handle, "WebCoreShutdown")
 		if err != nil {
 			return err
 		}
 		var nargs uintptr = 1
-		r1, _, callErr := syscall.Syscall(uintptr(webCoreShutdown),
+		_, _, callErr := syscall.Syscall(uintptr(webCoreShutdown),
 			nargs, uintptr(unsafe.Pointer(&immediate)), 0, 0)
 
-		fmt.Println(r1, " - ", callErr)
 		if callErr != 0 {
 			return callErr
 		}
-		fmt.Println("Server Shutdown")
+		fmt.Printf("Server Shutdown for %+v\n", instanceName)
 	}
 	return nil
 }
 
 type App struct {
+	Instance              string
 	Port                  int
 	RootPath              string
 	ApplicationHostConfig string
@@ -173,6 +172,7 @@ func main() {
 	checkErr(err)
 
 	app := App{
+		Instance: uuid.Generate().String(),
 		Port:     port,
 		RootPath: rootPath,
 	}
@@ -181,12 +181,12 @@ func main() {
 	checkErr(wc.Activate(
 		app.ApplicationHostConfig,
 		app.WebConfig,
-		uuid.Generate().String()))
+		app.Instance))
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
-	s := <-c
-	checkErr(wc.Shutdown(1))
+	<-c
+	checkErr(wc.Shutdown(1, app.Instance))
 }
 
 func checkErr(err error) {
